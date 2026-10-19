@@ -1,0 +1,343 @@
+{
+  "name": "Recepcion de cotizaciones por correo",
+  "nodes": [
+    {
+      "parameters": {
+        "mailbox": "INBOX",
+        "postProcessAction": "nothing",
+        "format": "simple",
+        "options": {}
+      },
+      "id": "22a2b554-a9c1-43bc-a005-001ab7100001",
+      "name": "Email Trigger IMAP",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst source = $input.first().json;\nconst body = String(source.textPlain || source.text || source.body || source.html || '')\n  .replace(/<[^>]*>/g, ' ')\n  .replace(/&nbsp;/gi, ' ');\nconst lineValue = (label) => {\n  const match = body.match(new RegExp('(?:^|\\\\n)\\\\s*' + label + '\\\\s*:\\\\s*([^\\\\r\\\\n]+)', 'i'));\n  return match ? match[1].trim() : '';\n};\nconst sender = source.from || source.sender || {};\nconst firstSender = sender.value && sender.value[0] ? sender.value[0] : {};\nconst fromText = typeof sender === 'string' ? sender : (sender.text || '');\nconst emailMatch = String(firstSender.address || fromText).match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/i);\nconst email = emailMatch ? emailMatch[0] : '';\nconst name = lineValue('Nombre') || firstSender.name ||\n  (fromText.includes('<') ? fromText.split('<')[0].replace(/\"/g, '').trim() : email.split('@')[0]);\nconst productTitle = lineValue('Producto');\nconst quantityText = lineValue('Cantidad');\nconst quantity = /^\\d+$/.test(quantityText) ? Number(quantityText) : NaN;\nconst errors = [];\nif (!name) errors.push('Falta el nombre del solicitante.');\nif (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) errors.push('El correo del solicitante no es válido.');\nif (!productTitle) errors.push('Falta el producto solicitado.');\nif (!Number.isInteger(quantity) || quantity <= 0) errors.push('La cantidad debe ser un entero mayor que cero.');\nconst valid = errors.length === 0;\nreturn [{ json: {\n  id: 'COT-' + Date.now() + '-' + Math.floor(Math.random() * 100000),\n  requester: name,\n  email,\n  productTitle,\n  quantity: Number.isNaN(quantity) ? null : quantity,\n  productId: null,\n  availableStock: null,\n  status: valid ? 'recibida' : 'error_datos',\n  error: valid ? null : errors.join(' '),\n  createdAt: new Date().toISOString(),\n  valid\n} }];\n"
+      },
+      "id": "22a2b554-a9c1-43bc-a005-001ab7100002",
+      "name": "Parsear solicitud",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "valid-request",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "22a2b554-a9c1-43bc-a005-001ab7100003",
+      "name": "Solicitud válida?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://dummyjson.com/products/search",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "q",
+              "value": "={{ $json.productTitle }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "22a2b554-a9c1-43bc-a005-001ab7100004",
+      "name": "Buscar producto API externa",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        200
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst request = $('Parsear solicitud').first().json;\nconst response = $input.first().json;\nconst failed = response.error || (response.statusCode && response.statusCode >= 400) || !Array.isArray(response.products);\nif (failed) {\n  return [{ json: { ...request, catalogValid: false, status: 'error_api', error: 'No se pudo consultar el catálogo externo.' } }];\n}\nconst normalize = (value) => String(value || '').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').trim().toLowerCase();\nconst found = response.products.find((item) => normalize(item.title) === normalize(request.productTitle));\nif (!found) {\n  return [{ json: { ...request, catalogValid: false, status: 'producto_no_encontrado', error: 'El producto no existe en el catálogo externo.' } }];\n}\nreturn [{ json: { ...request, externalId: found.id, productTitle: found.title, catalogValid: true, status: 'catalogo_validado', error: null } }];\n"
+      },
+      "id": "22a2b554-a9c1-43bc-a005-001ab7100005",
+      "name": "Evaluar catálogo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "valid-catalog",
+              "leftValue": "={{ $json.catalogValid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "22a2b554-a9c1-43bc-a005-001ab7100006",
+      "name": "Producto validado?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://localhost:3000/products",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "externalId",
+              "value": "={{ $json.externalId }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "22a2b554-a9c1-43bc-a005-001ab7100007",
+      "name": "Consultar inventario JSON Server",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1360,
+        120
+      ],
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nclass Product {\n  constructor(data) {\n    this.id = data.id;\n    this.externalId = Number(data.externalId);\n    this.title = String(data.title || '').trim();\n    this.stock = Number(data.stock);\n  }\n  hasStock(quantity) {\n    return Number.isInteger(quantity) && quantity > 0 && this.stock >= quantity;\n  }\n}\nclass QuoteRequest {\n  constructor(data) {\n    Object.assign(this, data);\n    this.quantity = Number(data.quantity);\n    this.productId = null;\n    this.availableStock = null;\n  }\n  validate() {\n    const errors = [];\n    if (!this.requester) errors.push('Falta el nombre del solicitante.');\n    if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(this.email)) errors.push('El correo del solicitante no es válido.');\n    if (!this.productTitle) errors.push('Falta el producto solicitado.');\n    if (!Number.isInteger(this.quantity) || this.quantity <= 0) errors.push('La cantidad debe ser un entero mayor que cero.');\n    return { valid: errors.length === 0, errors };\n  }\n  evaluateProduct(product) {\n    const validation = this.validate();\n    if (!validation.valid) {\n      this.status = 'error_datos';\n      this.error = validation.errors.join(' ');\n      return this;\n    }\n    if (!product) {\n      this.status = 'producto_no_encontrado';\n      this.error = 'El producto no existe en el catálogo o inventario.';\n      return this;\n    }\n    this.productId = product.id;\n    this.productTitle = product.title;\n    this.availableStock = product.stock;\n    this.status = product.hasStock(this.quantity) ? 'pendiente' : 'sin_stock';\n    this.error = null;\n    return this;\n  }\n}\nconst requestData = $('Evaluar catálogo').first().json;\nconst result = $input.first().json;\nif (result.error || (result.statusCode && result.statusCode >= 400)) {\n  return [{ json: { ...requestData, productId: null, availableStock: null, status: 'error_inventario', error: 'No se pudo consultar el inventario en JSON Server.' } }];\n}\nconst rows = Array.isArray(result) ? result : Array.isArray(result.body) ? result.body : (result.id ? [result] : []);\nconst row = rows.find((item) => Number(item.externalId) === Number(requestData.externalId));\nconst product = row ? new Product(row) : null;\nconst request = new QuoteRequest(requestData).evaluateProduct(product);\nreturn [{ json: {\n  id: request.id,\n  requester: request.requester,\n  email: request.email,\n  productId: request.productId,\n  productTitle: request.productTitle,\n  quantity: request.quantity,\n  availableStock: request.availableStock,\n  status: request.status,\n  error: request.error,\n  createdAt: request.createdAt\n} }];\n"
+      },
+      "id": "22a2b554-a9c1-43bc-a005-001ab7100008",
+      "name": "Evaluar inventario con POO",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\nconst request = $input.first().json;\nreturn [{ json: {\n  id: request.id,\n  requester: request.requester || '',\n  email: request.email || '',\n  productId: null,\n  productTitle: request.productTitle || '',\n  quantity: request.quantity,\n  availableStock: null,\n  status: request.status || 'error_datos',\n  error: request.error || 'La solicitud no pudo validarse.',\n  createdAt: request.createdAt || new Date().toISOString()\n} }];\n"
+      },
+      "id": "22a2b554-a9c1-43bc-a005-001ab7100009",
+      "name": "Preparar registro de error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:3000/quotes",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "22a2b554-a9c1-43bc-a005-001ab7100010",
+      "name": "Registrar cotización",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1820,
+        260
+      ]
+    }
+  ],
+  "connections": {
+    "Email Trigger IMAP": {
+      "main": [
+        [
+          {
+            "node": "Parsear solicitud",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parsear solicitud": {
+      "main": [
+        [
+          {
+            "node": "Solicitud válida?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Solicitud válida?": {
+      "main": [
+        [
+          {
+            "node": "Buscar producto API externa",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Preparar registro de error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar producto API externa": {
+      "main": [
+        [
+          {
+            "node": "Evaluar catálogo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluar catálogo": {
+      "main": [
+        [
+          {
+            "node": "Producto validado?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Producto validado?": {
+      "main": [
+        [
+          {
+            "node": "Consultar inventario JSON Server",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Preparar registro de error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar inventario JSON Server": {
+      "main": [
+        [
+          {
+            "node": "Evaluar inventario con POO",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluar inventario con POO": {
+      "main": [
+        [
+          {
+            "node": "Registrar cotización",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar registro de error": {
+      "main": [
+        [
+          {
+            "node": "Registrar cotización",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "22a2b554-a9c1-43bc-a005-001ab7100011",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

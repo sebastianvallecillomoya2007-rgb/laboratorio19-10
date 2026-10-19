@@ -1,0 +1,23 @@
+{
+  "products": [
+    {
+      "id": "inv-1",
+      "externalId": 1,
+      "title": "Essence Mascara Lash Princess",
+      "stock": 12
+    },
+    {
+      "id": "inv-2",
+      "externalId": 2,
+      "title": "Eyeshadow Palette with Mirror",
+      "stock": 0
+    },
+    {
+      "id": "inv-3",
+      "externalId": 3,
+      "title": "Powder Canister",
+      "stock": 2
+    }
+  ],
+  "quotes": []
+}
